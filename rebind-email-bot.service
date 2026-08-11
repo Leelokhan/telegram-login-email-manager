@@ -4,11 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-# 换成你实际部署的路径和用户
-User=youruser
-WorkingDirectory=/home/youruser/rebind-email-bot
-EnvironmentFile=/home/youruser/rebind-email-bot/.env
-ExecStart=/home/youruser/rebind-email-bot/venv/bin/python3 rebind_email_bot.py
+User=root
+WorkingDirectory=/root/rebind-email-bot
+EnvironmentFile=/root/rebind-email-bot/.env
+ExecStart=/root/rebind-email-bot/venv/bin/python3 rebind_email_bot.py
 Restart=on-failure
 RestartSec=5
 
