@@ -8,7 +8,7 @@
 
 bash
 mkdir -p ~/rebind-email-bot && cd ~/rebind-email-bot
-# 把上面4个文件放进这个目录
+ 把上面4个文件放进这个目录
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
