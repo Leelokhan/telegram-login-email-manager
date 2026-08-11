@@ -38,13 +38,14 @@ from telegram.ext import (
     filters,
 )
 
-from telethon import TelegramClient
+from telethon import TelegramClient, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError,
-    EmailUnconfirmedError,
     PasswordHashInvalidError,
     PhoneCodeInvalidError,
+    CodeInvalidError,
+    EmailInvalidError,
 )
 
 logging.basicConfig(
@@ -172,7 +173,6 @@ async def got_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cleanup(context)
         return ConversationHandler.END
 
-    context.user_data["pwd_2fa"] = pwd
     await context.bot.send_message(
         update.effective_chat.id, "登录成功！请输入要绑定的新登录邮箱："
     )
@@ -183,69 +183,65 @@ async def got_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def got_new_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_email = update.message.text.strip()
     context.user_data["new_email"] = new_email
-
-    loop = asyncio.get_running_loop()
-    fut = loop.create_future()
-    context.user_data["email_code_future"] = fut
-
-    async def email_code_callback(length):
-        code = await fut
-        return code
-
     client = context.user_data["client"]
-    pwd_2fa = context.user_data.get("pwd_2fa")
-    chat_id = update.effective_chat.id
 
-    if pwd_2fa is None:
-        await update.message.reply_text(
-            "这个账号没有检测到两步验证密码，无法仅设置邮箱。"
-            "请先在 Telegram App 内设置两步验证密码后再试。"
+    # 这里用的是 account.sendVerifyEmailCode，操作的是独立的
+    # "登录邮箱"（Login Email）功能，跟两步验证密码/恢复邮箱是两回事，
+    # 不需要用到密码。
+    try:
+        sent = await client(
+            functions.account.SendVerifyEmailCodeRequest(
+                purpose=types.EmailVerifyPurposeLoginChange(),
+                email=new_email,
+            )
         )
+    except EmailInvalidError:
+        await update.message.reply_text("邮箱格式不对，请重新输入：")
+        return NEW_EMAIL
+    except Exception as e:
+        await update.message.reply_text(f"发送邮箱验证码失败: {e}")
         await cleanup(context)
         return ConversationHandler.END
 
     await update.message.reply_text(
-        f"已请求向 {new_email} 发送验证码，收到后请把验证码发给我："
+        f"已发送验证码到 {sent.email_pattern}，请输入收到的{sent.length}位验证码："
     )
-
-    async def do_edit():
-        try:
-            ok = await client.edit_2fa(
-                current_password=pwd_2fa,
-                new_password=pwd_2fa,
-                email=new_email,
-                email_code_callback=email_code_callback,
-            )
-            await context.bot.send_message(
-                chat_id, "✅ 登录邮箱绑定成功！" if ok else "❌ 绑定失败，请检查后重试。"
-            )
-        except EmailUnconfirmedError:
-            await context.bot.send_message(chat_id, "❌ 邮箱验证码未确认，绑定未完成。")
-        except Exception as e:
-            await context.bot.send_message(chat_id, f"❌ 出错: {e}")
-        finally:
-            await cleanup(context)
-
-    context.user_data["edit_task"] = asyncio.create_task(do_edit())
     return EMAIL_CODE
 
 
 @owner_only
 async def got_email_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code = update.message.text.strip()
+    client = context.user_data["client"]
+    new_email = context.user_data.get("new_email")
 
     try:
         await update.message.delete()
     except Exception:
         pass
 
-    fut = context.user_data.get("email_code_future")
-    if fut and not fut.done():
-        fut.set_result(code)
+    try:
+        result = await client(
+            functions.account.VerifyEmailRequest(
+                purpose=types.EmailVerifyPurposeLoginChange(),
+                verification=types.EmailVerificationCode(code=code),
+            )
+        )
+        await context.bot.send_message(
+            update.effective_chat.id,
+            f"✅ 登录邮箱绑定成功！新邮箱: {getattr(result, 'email', new_email)}",
+        )
+    except CodeInvalidError:
+        await context.bot.send_message(
+            update.effective_chat.id, "验证码错误，请重新输入："
+        )
+        return EMAIL_CODE
+    except Exception as e:
+        await context.bot.send_message(update.effective_chat.id, f"❌ 出错: {e}")
+    finally:
+        pass
 
-    task = context.user_data.get("edit_task")
-    if task:
-        await task  # 等后台的 edit_2fa 跑完，结果会由 do_edit() 自己发消息通知
+    await cleanup(context)
     return ConversationHandler.END
 
 
